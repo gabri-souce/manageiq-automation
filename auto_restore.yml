@@ -1,0 +1,52 @@
+---
+- name: Auto-Restore Custom Quotas
+  hosts: all
+  gather_facts: false
+  
+  vars:
+    custom_quotas:
+      87:           # ← CAMBIA CON IL TUO TENANT ID
+        windows: 15
+        rhel: 5
+        backup: 100
+      # Aggiungi altri tenant:
+      # 42:
+      #   windows: 10
+      #   rhel: 3
+      #   backup: 50
+
+  tasks:
+    - name: Check and restore quotas
+      shell: |
+        /var/www/miq/vmdb/bin/rails runner - <<'RUBY'
+        tenant_id = {{ item.key }}
+        quotas = { windows: {{ item.value.windows }}, rhel: {{ item.value.rhel }}, backup: {{ item.value.backup }} }
+        
+        tenant = CloudTenant.find_by(id: tenant_id)
+        unless tenant
+          puts "SKIP:Not found"
+          exit 0
+        end
+        
+        existing = CloudResourceQuota.where(
+          cloud_tenant_id: tenant_id,
+          service_name: ["License", "Service"]
+        ).count
+        
+        if existing < 3
+          CloudResourceQuota.where(
+            cloud_tenant_id: tenant_id,
+            service_name: ["License", "Service"]
+          ).destroy_all
+          
+          tenant.cloud_resource_quotas.create!([
+            { service_name: "License", name: "Windows Server", value: quotas[:windows], used: 0, ems_id: tenant.ems_id },
+            { service_name: "License", name: "RHEL", value: quotas[:rhel], used: 0, ems_id: tenant.ems_id },
+            { service_name: "Service", name: "Backup", value: quotas[:backup], used: 0, ems_id: tenant.ems_id }
+          ])
+          puts "OK:Restored"
+        else
+          puts "OK:Present"
+        end
+        RUBY
+      loop: "{{ custom_quotas | dict2items }}"
