@@ -1,0 +1,84 @@
+- name: Save License Data to Database/API
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    # Questi vengono passati da ManageIQ come extra_vars
+    tenant_id: "{{ tenant_id }}"
+    tenant_name: "{{ tenant_name }}"
+    tenant_openstack_id: "{{ tenant_openstack_id }}"
+    windows_count: "{{ windows_count }}"
+    rhel_count: "{{ rhel_count }}"
+    
+    # Configurazione quota (da file o survey)
+    license_quotas:
+      default:
+        windows: 10
+        rhel: 10
+      tenant-production:
+        windows: 50
+        rhel: 30
+      tenant-development:
+        windows: 20
+        rhel: 10
+  
+  tasks:
+    - name: Display received data
+      debug:
+        msg: |
+          Tenant: {{ tenant_name }}
+          OpenStack ID: {{ tenant_openstack_id }}
+          Windows VMs: {{ windows_count }}
+          RHEL VMs: {{ rhel_count }}
+    
+    # Leggi quota per questo tenant
+    - name: Get quota for tenant
+      set_fact:
+        tenant_quota: "{{ license_quotas[tenant_name] | default(license_quotas['default']) }}"
+    
+    - name: Show quota
+      debug:
+        msg: |
+          Windows quota: {{ tenant_quota.windows }}
+          RHEL quota: {{ tenant_quota.rhel }}
+    
+    # OPZIONE 1: Salva in License Manager API
+    - name: Update license data via API
+      block:
+        - name: Ensure tenant exists
+          uri:
+            url: "{{ license_manager_url }}/api/v1/tenants"
+            method: POST
+            body_format: json
+            body:
+              openstack_id: "{{ tenant_openstack_id }}"
+              name: "{{ tenant_name }}"
+            status_code: [201, 400]
+          ignore_errors: yes
+        
+        - name: Set Windows quota
+          uri:
+            url: "{{ license_manager_url }}/api/v1/tenants/openstack/{{ tenant_openstack_id }}/quotas/windows?quota={{ tenant_quota.windows }}"
+            method: PUT
+            status_code: 200
+        
+        - name: Set RHEL quota
+          uri:
+            url: "{{ license_manager_url }}/api/v1/tenants/openstack/{{ tenant_openstack_id }}/quotas/rhel?quota={{ tenant_quota.rhel }}"
+            method: PUT
+            status_code: 200
+        
+        - name: Update Windows usage
+          uri:
+            url: "{{ license_manager_url }}/api/v1/tenants/openstack/{{ tenant_openstack_id }}/usage/windows?used={{ windows_count }}"
+            method: POST
+            status_code: 200
+        
+        - name: Update RHEL usage
+          uri:
+            url: "{{ license_manager_url }}/api/v1/tenants/openstack/{{ tenant_openstack_id }}/usage/rhel?used={{ rhel_count }}"
+            method: POST
+            status_code: 200
+      
+      when: license_manager_url is defined
