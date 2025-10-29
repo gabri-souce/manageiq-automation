@@ -76,43 +76,4 @@
       
       when: license_manager_url is defined
     
-    # OPZIONE 2: Salva direttamente in PostgreSQL ManageIQ
-    - name: Update license data in ManageIQ DB
-      block:
-        - name: Ensure postgresql library is available
-          pip:
-            name: psycopg2-binary
-            state: present
-          ignore_errors: true
-        
-        - name: Insert/Update license data
-          postgresql_query:
-            login_host: "{{ manageiq_db_host }}"
-            login_port: 5432
-            login_user: "{{ manageiq_db_user }}"
-            login_password: "{{ manageiq_db_password }}"
-            db: vmdb_production
-            query: |
-              INSERT INTO license_quotas 
-                (tenant_id, tenant_name, tenant_ems_ref, 
-                 windows_quota, windows_used, rhel_quota, rhel_used, last_updated)
-              VALUES 
-                ({{ tenant_id }}, '{{ tenant_name }}', '{{ tenant_openstack_id }}',
-                 {{ tenant_quota.windows }}, {{ windows_count }}, 
-                 {{ tenant_quota.rhel }}, {{ rhel_count }}, NOW())
-              ON CONFLICT (tenant_id) 
-              DO UPDATE SET
-                tenant_name = EXCLUDED.tenant_name,
-                tenant_ems_ref = EXCLUDED.tenant_ems_ref,
-                windows_quota = EXCLUDED.windows_quota,
-                windows_used = EXCLUDED.windows_used,
-                rhel_quota = EXCLUDED.rhel_quota,
-                rhel_used = EXCLUDED.rhel_used,
-                last_updated = NOW();
-          register: db_result
-        
-        - name: Success message
-          debug:
-            msg: "✅ Database updated for tenant {{ tenant_name }}"
-      
-      when: manageiq_db_host is defined
+   
