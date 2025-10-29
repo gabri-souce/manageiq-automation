@@ -1,7 +1,6 @@
-mkdir collections
-cat > collections/requirements.yml << 'EOF'
 ---
 collections:
   - name: community.postgresql
     version: ">=2.0.0"
 EOF
+
