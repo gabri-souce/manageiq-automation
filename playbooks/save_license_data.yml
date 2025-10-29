@@ -1,0 +1,141 @@
+---
+- name: Save License Data to ManageIQ Database
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars_files:
+    - license_quotas_config.yml
+  
+  collections:
+    - community.postgresql
+  
+  tasks:
+    # ========== AUTO-CREATE TABLE ==========
+    - name: Ensure license_quotas table exists
+      block:
+        - name: Install psycopg2 library
+          pip:
+            name: psycopg2-binary
+            state: present
+          ignore_errors: true
+        
+        - name: Create table and indexes
+          community.postgresql.postgresql_query:
+            login_host: "{{ manageiq_db_host }}"
+            login_port: 5432
+            login_user: "{{ manageiq_db_user }}"
+            login_password: "{{ manageiq_db_password }}"
+            db: vmdb_production
+            query: |
+              CREATE TABLE IF NOT EXISTS license_quotas (
+                  id SERIAL PRIMARY KEY,
+                  tenant_id INTEGER NOT NULL,
+                  tenant_name VARCHAR(255),
+                  tenant_ems_ref VARCHAR(255),
+                  windows_quota INTEGER DEFAULT 0,
+                  windows_used INTEGER DEFAULT 0,
+                  rhel_quota INTEGER DEFAULT 0,
+                  rhel_used INTEGER DEFAULT 0,
+                  last_updated TIMESTAMP DEFAULT NOW(),
+                  CONSTRAINT unique_tenant UNIQUE(tenant_id)
+              );
+              
+              CREATE INDEX IF NOT EXISTS idx_license_quotas_tenant_id 
+                ON license_quotas(tenant_id);
+              
+              CREATE INDEX IF NOT EXISTS idx_license_quotas_tenant_name 
+                ON license_quotas(tenant_name);
+          register: table_result
+        
+        - name: Table ready
+          debug:
+            msg: "✅ Table license_quotas is ready"
+    
+    # ========== VALIDATION ==========
+    - name: Show received data
+      debug:
+        msg:
+          - "=========================================="
+          - "Processing Tenant: {{ tenant_name | default('NOT_SET') }}"
+          - "=========================================="
+          - "tenant_id: {{ tenant_id | default('NOT_SET') }}"
+          - "tenant_openstack_id: {{ tenant_openstack_id | default('NOT_SET') }}"
+          - "windows_count: {{ windows_count | default('NOT_SET') }}"
+          - "rhel_count: {{ rhel_count | default('NOT_SET') }}"
+    
+    - name: Validate required variables
+      assert:
+        that:
+          - tenant_id is defined
+          - tenant_name is defined
+          - tenant_openstack_id is defined
+          - windows_count is defined
+          - rhel_count is defined
+        fail_msg: |
+          ❌ Required variables missing!
+          Expected: tenant_id, tenant_name, tenant_openstack_id, windows_count, rhel_count
+    
+    # ========== GET QUOTA ==========
+    - name: Get quota for tenant
+      set_fact:
+        tenant_quota: "{{ license_quotas[tenant_name] | default(license_quotas['default']) }}"
+    
+    - name: Display quota
+      debug:
+        msg:
+          - "Windows quota: {{ tenant_quota.windows }}"
+          - "RHEL quota: {{ tenant_quota.rhel }}"
+    
+    # ========== UPDATE DATABASE ==========
+    - name: Insert or update license data
+      community.postgresql.postgresql_query:
+        login_host: "{{ manageiq_db_host }}"
+        login_port: 5432
+        login_user: "{{ manageiq_db_user }}"
+        login_password: "{{ manageiq_db_password }}"
+        db: vmdb_production
+        query: |
+          INSERT INTO license_quotas 
+            (tenant_id, tenant_name, tenant_ems_ref, 
+             windows_quota, windows_used, rhel_quota, rhel_used, last_updated)
+          VALUES 
+            ({{ tenant_id }}, '{{ tenant_name }}', '{{ tenant_openstack_id }}',
+             {{ tenant_quota.windows }}, {{ windows_count }}, 
+             {{ tenant_quota.rhel }}, {{ rhel_count }}, NOW())
+          ON CONFLICT (tenant_id) 
+          DO UPDATE SET
+            tenant_name = EXCLUDED.tenant_name,
+            tenant_ems_ref = EXCLUDED.tenant_ems_ref,
+            windows_quota = EXCLUDED.windows_quota,
+            windows_used = EXCLUDED.windows_used,
+            rhel_quota = EXCLUDED.rhel_quota,
+            rhel_used = EXCLUDED.rhel_used,
+            last_updated = NOW();
+    
+    # ========== VERIFICATION ==========
+    - name: Query updated data
+      community.postgresql.postgresql_query:
+        login_host: "{{ manageiq_db_host }}"
+        login_port: 5432
+        login_user: "{{ manageiq_db_user }}"
+        login_password: "{{ manageiq_db_password }}"
+        db: vmdb_production
+        query: |
+          SELECT tenant_name, windows_used, windows_quota, 
+                 rhel_used, rhel_quota, last_updated
+          FROM license_quotas
+          WHERE tenant_id = {{ tenant_id }};
+      register: result
+    
+    - name: Show success
+      debug:
+        msg:
+          - "=========================================="
+          - "✅ SUCCESS"
+          - "=========================================="
+          - "Tenant: {{ result.query_result[0].tenant_name }}"
+          - "Windows: {{ result.query_result[0].windows_used }}/{{ result.query_result[0].windows_quota }}"
+          - "RHEL: {{ result.query_result[0].rhel_used }}/{{ result.query_result[0].rhel_quota }}"
+          - "Updated: {{ result.query_result[0].last_updated }}"
+          - "=========================================="
